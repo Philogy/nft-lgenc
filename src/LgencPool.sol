@@ -28,6 +28,8 @@ contract LgencPool {
         _;
     }
 
+    receive() external payable {}
+
     constructor() {
         owner = msg.sender;
     }
@@ -46,7 +48,7 @@ contract LgencPool {
         totalReserves += _amount;
     }
 
-    function withdraw(uint _amount) external payable ensureSolvency onlyOwner {
+    function withdraw(uint _amount) external payable onlyOwner {
         totalReserves -= _amount;
     }
 
@@ -99,14 +101,12 @@ contract LgencPool {
         IERC721(_pool.nftContract).transferFrom(msg.sender, address(this), _tokenId);
     }
 
-    function repay(Loan memory _loan) external payable ensureSolvency {
+    function repay(Loan memory _loan, address _recipient) external payable ensureSolvency {
         bytes32 loanId = getLoanHash(_loan);
         require(loanOwner[loanId] == msg.sender, "Pool: Not loan owner");
         uint interest = (_loan.totalBorrowed * (block.timestamp - _loan.startTime) * _loan.interestPerSecond) / 1e18;
         totalReserves += interest;
-        totalCollateral -= _loan.totalBorrowed;
-        delete loanOwner[loanId];
-        IERC721(_loan.nftContract).transferFrom(address(this), msg.sender, _loan.tokenId);
+        _closeLoan(loanId, _loan, _recipient);
     }
 
     // No solvency check required, cannot break invariant
@@ -115,8 +115,12 @@ contract LgencPool {
         require(loanOwner[loanId] != address(0), "Pool: Nonexistent loan");
         require(_loan.endTime < block.timestamp, "Pool: Too early liquidation");
         totalReserves -= _loan.totalBorrowed;
+        _closeLoan(loanId, _loan, _recipient);
+    }
+
+    function _closeLoan(bytes32 _loanId, Loan memory _loan, address _recipient) internal {
         totalCollateral -= _loan.totalBorrowed;
-        delete loanOwner[loanId];
+        delete loanOwner[_loanId];
         IERC721(_loan.nftContract).transferFrom(address(this), _recipient, _loan.tokenId);
     }
 }
