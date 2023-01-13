@@ -29,8 +29,8 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
 
     struct PoolData {
         address nftContract;
-        uint baseInterest;
-        uint maxVarInterest;
+        uint baseRate;
+        uint maxVarRate;
         uint maxLoanLength;
         uint maxLtv;
     }
@@ -50,7 +50,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         uint tokenId;
         uint startTime;
         uint deadline;
-        uint interest;
+        uint rate;
         uint120 debt;
     }
 
@@ -60,9 +60,9 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         uint indexed tokenId,
         uint debt,
         uint deadline,
-        uint interest
+        uint rate
     );
-    event LoanRepayed(uint indexed loanId, uint interestPaid);
+    event LoanRepayed(uint indexed loanId, uint interest);
     event LoanLiquidated(uint indexed loanId);
     event OracleSet(address indexed oracle);
     event PoolConfigured(bytes32 indexed poolId, bool indexed activated, uint120 maxValue);
@@ -182,7 +182,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         uint expiry;
         bytes signature;
         // slippage
-        uint maxInterest;
+        uint maxRate;
         // borrow
         address recipient;
         uint[] tokenIds;
@@ -202,17 +202,18 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         // Validate loan value and oracle price.
         if (_params.nftValue > poolState.maxValue) revert TokenValueExceedsPoolMax();
         validateOraclePrice(_params.maxPrice, _params.expiry, _pool.nftContract, _params.signature);
-        if ((_params.maxPrice * _pool.maxLtv) / 1e18 < _params.nftValue)
+        if (_params.maxPrice * _pool.maxLtv < _params.nftValue * 1e18)
             revert TooHighCollateralValue();
 
         // Calculate and check interest for slippage.
         uint totalReservesCached = totalReserves;
         uint totalTokens = _params.tokenIds.length;
         uint totalNewDebt = _params.nftValue * totalTokens;
-        uint loanInterest = _pool.baseInterest +
-            ((poolState.debt + totalNewDebt / 2) * _pool.maxVarInterest) /
+        // Calculates interest rate based on pool's utilization vs. whole.
+        uint rate = _pool.baseRate +
+            ((poolState.debt + totalNewDebt / 2) * _pool.maxVarRate) /
             totalReservesCached;
-        if (_params.maxInterest < loanInterest) revert InterestSlippage();
+        if (_params.maxRate < rate) revert InterestSlippage();
 
         Loan memory loan = Loan({
             poolId: poolId,
@@ -220,7 +221,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
             tokenId: 0,
             startTime: block.timestamp,
             deadline: block.timestamp + _pool.maxLoanLength,
-            interest: loanInterest,
+            rate: rate,
             debt: _params.nftValue.toUint120()
         });
 
@@ -238,10 +239,9 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     function repayLoan(Loan memory _loan, address _recipient) external payable ensureSolvency {
         uint loanId = getLoanId(_loan);
         if (!_isApprovedOrOwner(msg.sender, loanId)) revert NotLoanOwner();
-        uint interestPaid = (_loan.debt * (block.timestamp - _loan.startTime) * _loan.interest) /
-            1e18;
-        totalReserves += interestPaid.toUint120();
-        emit LoanRepayed(loanId, interestPaid);
+        uint interest = (_loan.debt * (block.timestamp - _loan.startTime) * _loan.rate) / 1e18;
+        totalReserves += interest.toUint120();
+        emit LoanRepayed(loanId, interest);
         _closeLoan(loanId, _loan, _recipient);
     }
 
@@ -262,7 +262,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
             _loan.tokenId,
             _loan.debt,
             _loan.deadline,
-            _loan.interest
+            _loan.rate
         );
         IERC721(_loan.nftContract).transferFrom(msg.sender, address(this), _loan.tokenId);
     }

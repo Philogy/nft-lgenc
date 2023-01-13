@@ -62,8 +62,8 @@ contract LgencPoolTest is Test {
     function testActivatePool() public {
         LgencPool.PoolData memory poolData = LgencPool.PoolData({
             nftContract: address(0),
-            baseInterest: uint(0.30e18) / uint(365 days),
-            maxVarInterest: uint(1.5e18) / (365 days),
+            baseRate: uint(0.30e18) / uint(365 days),
+            maxVarRate: uint(1.5e18) / (365 days),
             maxLoanLength: 14 days,
             maxLtv: 0.5e18
         });
