@@ -20,6 +20,8 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     /// @dev `keccak256("LLAMA_BORROW_MAGIC") - 1`
     bytes32 internal constant LLAMA_FLASH_BORROW_MAGIC =
         0xb996126305cd04eaa8c492853f591f60a10bedcefe5665f4080d2bc210e73045;
+    /// @dev Interest rate that is charged for past due loans (100% / day => 1e18 / (24 * 60 * 60) = 11574074074074)
+    uint internal constant LATE_RATE = 11574074074074;
 
     bool public checkingSolvency;
     uint120 public totalCollateralizedDebt;
@@ -239,18 +241,29 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     function repayLoan(Loan memory _loan, address _recipient) external payable ensureSolvency {
         uint loanId = getLoanId(_loan);
         if (!_isApprovedOrOwner(msg.sender, loanId)) revert NotLoanOwner();
-        uint interest = (_loan.debt * (block.timestamp - _loan.startTime) * _loan.rate) / 1e18;
+        uint interest = getInterest(_loan);
         totalReserves += interest.toUint120();
         emit LoanRepayed(loanId, interest);
         _closeLoan(loanId, _loan, _recipient);
     }
 
+    /// @dev Liquidates loan that remains unrepayed after its deadline.
     function doEffectiveAltruism(Loan memory _loan, address _recipient) external payable onlyOwner {
         uint loanId = getLoanId(_loan);
         if (_loan.deadline >= block.timestamp) revert IncorrectLiquidation();
         totalReserves -= _loan.debt;
         emit LoanLiquidated(loanId);
         _closeLoan(loanId, _loan, _recipient);
+    }
+
+    function getInterest(Loan memory _loan) public view returns (uint) {
+        if (block.timestamp <= _loan.deadline) {
+            return (_loan.debt * (block.timestamp - _loan.startTime) * _loan.rate) / 1e18;
+        } else {
+            uint baseInterest = (_loan.deadline - _loan.startTime) * _loan.rate;
+            uint lateInterest = (block.timestamp - _loan.deadline) * LATE_RATE;
+            return (_loan.debt * (baseInterest + lateInterest)) / 1e18;
+        }
     }
 
     function _createLoan(Loan memory _loan, address _recipient) internal {
