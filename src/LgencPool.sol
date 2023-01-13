@@ -31,14 +31,14 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         address nftContract;
         uint baseInterest;
         uint maxVarInterest;
-        uint maxValue;
         uint maxLoanLength;
         uint maxLtv;
     }
 
     struct PoolState {
         bool isActive;
-        uint debt;
+        uint120 debt;
+        uint120 maxValue;
     }
     mapping(bytes32 => PoolState) public pools;
 
@@ -65,6 +65,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     event LoanRepayed(uint indexed loanId, uint interestPaid);
     event LoanLiquidated(uint indexed loanId);
     event OracleSet(address indexed oracle);
+    event PoolConfigured(bytes32 indexed poolId, bool indexed activated, uint120 maxValue);
 
     error Insolvent();
     error PriceExpired();
@@ -73,7 +74,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     error TokenValueExceedsPoolMax();
     error NotLoanOwner();
     error IncorrectLiquidation();
-    error UnexpectedUtilization();
+    error InterestSlippage();
     error IncorrectBorrowMagic();
 
     modifier ensureSolvency() {
@@ -139,8 +140,14 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         return keccak256(abi.encode(_pool));
     }
 
-    function setPool(bytes32 _poolId, bool _active) external payable onlyOwner {
+    function configurePool(
+        bytes32 _poolId,
+        bool _active,
+        uint120 _maxValue
+    ) external payable onlyOwner {
         pools[_poolId].isActive = _active;
+        pools[_poolId].maxValue = _maxValue;
+        emit PoolConfigured(_poolId, _active, _maxValue);
     }
 
     function getLoanId(Loan memory _loan) public pure returns (uint) {
@@ -175,29 +182,37 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         uint expiry;
         bytes signature;
         // slippage
-        uint maxPoolUtilization;
+        uint maxInterest;
         // borrow
         address recipient;
         uint[] tokenIds;
         uint nftValue;
-        bool averageInterest;
     }
 
     function createLoan(
         PoolData calldata _pool,
-        // Fix stack too deep
+        // Fixes stack too deep
         LoanCreationParams calldata _params
     ) external payable {
+        // Load and validate pool.
         bytes32 poolId = getPoolId(_pool);
-        uint poolDebt = pools[poolId].debt;
-        if (!pools[poolId].isActive) revert PoolNonexistent();
-        if (_params.nftValue > _pool.maxValue) revert TokenValueExceedsPoolMax();
+        PoolState memory poolState = pools[poolId];
+        if (!poolState.isActive) revert PoolNonexistent();
+
+        // Validate loan value and oracle price.
+        if (_params.nftValue > poolState.maxValue) revert TokenValueExceedsPoolMax();
         validateOraclePrice(_params.maxPrice, _params.expiry, _pool.nftContract, _params.signature);
         if ((_params.maxPrice * _pool.maxLtv) / 1e18 < _params.nftValue)
             revert TooHighCollateralValue();
+
+        // Calculate and check interest for slippage.
         uint totalReservesCached = totalReserves;
-        if (_params.maxPoolUtilization * totalReservesCached < poolDebt * 1e18)
-            revert UnexpectedUtilization();
+        uint totalTokens = _params.tokenIds.length;
+        uint totalNewDebt = _params.nftValue * totalTokens;
+        uint loanInterest = _pool.baseInterest +
+            ((poolState.debt + totalNewDebt / 2) * _pool.maxVarInterest) /
+            totalReservesCached;
+        if (_params.maxInterest < loanInterest) revert InterestSlippage();
 
         Loan memory loan = Loan({
             poolId: poolId,
@@ -205,39 +220,19 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
             tokenId: 0,
             startTime: block.timestamp,
             deadline: block.timestamp + _pool.maxLoanLength,
-            interest: 0,
+            interest: loanInterest,
             debt: _params.nftValue.toUint120()
         });
 
-        uint totalTokens = _params.tokenIds.length;
-        uint totalNewDebt = _params.nftValue * totalTokens;
-
-        if (_params.averageInterest) {
-            loan.interest =
-                _pool.baseInterest +
-                ((poolDebt + totalNewDebt / 2) * _pool.maxVarInterest) /
-                totalReservesCached;
-            for (uint i; i < totalTokens; ) {
-                loan.tokenId = _params.tokenIds[i];
-                _createLoan(loan, _params.recipient);
-                // prettier-ignore
-                unchecked { ++i; }
-            }
-        } else {
-            uint virtualInterest = (poolDebt + _params.nftValue / 2) * _pool.maxVarInterest;
-            uint interestStep = _params.nftValue * _pool.maxVarInterest;
-            for (uint i; i < totalTokens; ) {
-                loan.tokenId = _params.tokenIds[i];
-                loan.interest = virtualInterest / totalReservesCached;
-                _createLoan(loan, _params.recipient);
-                virtualInterest += interestStep;
-                // prettier-ignore
-                unchecked { ++i; }
-            }
+        for (uint i; i < totalTokens; ) {
+            loan.tokenId = _params.tokenIds[i];
+            _createLoan(loan, _params.recipient);
+            // prettier-ignore
+            unchecked { ++i; }
         }
 
         totalCollateralizedDebt += totalNewDebt.toUint120();
-        pools[poolId].debt += totalNewDebt;
+        pools[poolId].debt += totalNewDebt.toUint120();
     }
 
     function repayLoan(Loan memory _loan, address _recipient) external payable ensureSolvency {
@@ -250,7 +245,6 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         _closeLoan(loanId, _loan, _recipient);
     }
 
-    // No solvency check required, cannot break invariant
     function doEffectiveAltruism(Loan memory _loan, address _recipient) external payable onlyOwner {
         uint loanId = getLoanId(_loan);
         if (_loan.deadline >= block.timestamp) revert IncorrectLiquidation();
