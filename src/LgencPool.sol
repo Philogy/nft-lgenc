@@ -260,9 +260,9 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         if (block.timestamp <= _loan.deadline) {
             return (_loan.debt * (block.timestamp - _loan.startTime) * _loan.rate) / 1e18;
         } else {
-            uint baseInterest = (_loan.deadline - _loan.startTime) * _loan.rate;
-            uint lateInterest = (block.timestamp - _loan.deadline) * LATE_RATE;
-            return (_loan.debt * (baseInterest + lateInterest)) / 1e18;
+            uint baseInterestWad = (_loan.deadline - _loan.startTime) * _loan.rate;
+            uint lateInterestWad = (block.timestamp - _loan.deadline) * LATE_RATE;
+            return (_loan.debt * (baseInterestWad + lateInterestWad)) / 1e18;
         }
     }
 
