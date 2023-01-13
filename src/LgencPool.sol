@@ -26,7 +26,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         address nftContract;
         uint baseInterest;
         uint maxVarInterest;
-        uint maxAmount;
+        uint maxValue;
         uint maxLoanLength;
         uint maxLtv;
     }
@@ -65,6 +65,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     error PriceExpired();
     error NotOracle();
     error TooHighCollateralValue();
+    error TokenValueExceedsPoolMax();
     error NotLoanOwner();
     error IncorrectLiquidation();
     error UnexpectedUtilization();
@@ -91,6 +92,11 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
 
     function deposit() external payable {
         totalReserves = address(this).balance.toUint120() + totalCollateralizedDebt;
+        uint120 reserves = totalReserves;
+        uint120 collateralizedDebt = totalCollateralizedDebt;
+        uint120 maxReserves = address(this).balance.toUint120() + collateralizedDebt;
+        if (maxReserves < reserves) revert Insolvent();
+        totalReserves = maxReserves;
     }
 
     function withdrawTo(address _recipient, uint _amount) external payable onlyOwner {
@@ -167,6 +173,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         bytes32 poolId = getPoolId(_pool);
         uint poolDebt = pools[poolId].debt;
         if (!pools[poolId].isActive) revert PoolNonexistent();
+        if (_params.nftValue > _pool.maxValue) revert TokenValueExceedsPoolMax();
         validateOraclePrice(_params.maxPrice, _params.expiry, _pool.nftContract, _params.signature);
         if ((_params.maxPrice * _pool.maxLtv) / 1e18 < _params.nftValue)
             revert TooHighCollateralValue();
