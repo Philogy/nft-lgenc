@@ -275,6 +275,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
 
     function _closeLoan(uint _loanId, Loan memory _loan, address _recipient) internal {
         totalCollateralizedDebt -= _loan.debt;
+        pools[_loan.poolId].debt -= _loan.debt;
         _burn(_loanId);
         IERC721(_loan.nftContract).transferFrom(address(this), _recipient, _loan.tokenId);
     }
