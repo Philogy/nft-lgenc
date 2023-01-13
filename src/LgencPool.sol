@@ -59,6 +59,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     );
     event LoanRepayed(uint indexed loanId, uint interestPaid);
     event LoanLiquidated(uint indexed loanId);
+    event OracleSet(address indexed oracle);
 
     error Insolvent();
     error PriceExpired();
@@ -82,24 +83,20 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
 
     constructor(string memory _name, string memory _symbol) ERC721(_name, _symbol) {}
 
-    function multicall(
+    function checkedMulticall(
         bytes[] calldata _calls
-    ) public payable override ensureSolvency returns (bytes[] memory) {
+    ) public payable ensureSolvency returns (bytes[] memory) {
         return super.multicall(_calls);
     }
 
-    function deposit(uint _amount) external payable ensureSolvency onlyOwner {
-        totalReserves += _amount.toUint120();
+    function deposit() external payable {
+        totalReserves = address(this).balance.toUint120() + totalCollateralizedDebt;
     }
 
     function withdrawTo(address _recipient, uint _amount) external payable onlyOwner {
-        uint currentReserves = totalReserves;
-        if (_amount == ALL) {
-            totalReserves = 0;
-            _amount = currentReserves;
-        } else {
-            totalReserves = (currentReserves - _amount).toUint120();
-        }
+        if (_amount == ALL) _amount = address(this).balance;
+
+        totalReserves -= _amount.toUint120();
         _recipient.safeTransferETH(_amount);
     }
 
@@ -111,6 +108,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
 
     function setOracle(address _oracle) external payable onlyOwner {
         oracle = _oracle;
+        emit OracleSet(_oracle);
     }
 
     function getPoolId(PoolData calldata _pool) public pure returns (bytes32) {
@@ -165,7 +163,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         PoolData calldata _pool,
         // Fix stack too deep
         LoanCreationParams calldata _params
-    ) external payable ensureSolvency {
+    ) external payable {
         bytes32 poolId = getPoolId(_pool);
         uint poolDebt = pools[poolId].debt;
         if (!pools[poolId].isActive) revert PoolNonexistent();
