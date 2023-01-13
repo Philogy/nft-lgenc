@@ -8,13 +8,18 @@ import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {SafeCastLib} from "solady/utils/SafeCastLib.sol";
 import {ERC721} from "@openzeppelin/token/ERC721/ERC721.sol";
 import {Ownable2Step} from "@openzeppelin/access/Ownable2Step.sol";
+import {ILlamaFlashBorrower} from "./interfaces/ILlamaFlashBorrower.sol";
 
 /// @author philogy <https://github.com/philogy>
 contract LgencPool is Multicallable, ERC721, Ownable2Step {
     using SafeTransferLib for address;
     using SafeCastLib for uint;
 
+    /// @dev Not 0xfff..ffff to save gas, calldata zero bytes cost 4 gas vs 16 gas for non-zero bytes
     uint internal constant ALL = 0x8000000000000000000000000000000000000000000000000000000000000000;
+    /// @dev `keccak256("LLAMA_BORROW_MAGIC") - 1`
+    bytes32 internal constant LLAMA_FLASH_BORROW_MAGIC =
+        0xb996126305cd04eaa8c492853f591f60a10bedcefe5665f4080d2bc210e73045;
 
     bool public checkingSolvency;
     uint120 public totalCollateralizedDebt;
@@ -69,6 +74,7 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     error NotLoanOwner();
     error IncorrectLiquidation();
     error UnexpectedUtilization();
+    error IncorrectBorrowMagic();
 
     modifier ensureSolvency() {
         bool callNeedsToCheck = !checkingSolvency;
@@ -91,7 +97,6 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
     }
 
     function deposit() external payable {
-        totalReserves = address(this).balance.toUint120() + totalCollateralizedDebt;
         uint120 reserves = totalReserves;
         uint120 collateralizedDebt = totalCollateralizedDebt;
         uint120 maxReserves = address(this).balance.toUint120() + collateralizedDebt;
@@ -110,6 +115,19 @@ contract LgencPool is Multicallable, ERC721, Ownable2Step {
         uint amount = address(this).balance + totalCollateralizedDebt - totalReserves;
         if (amount == 0) return;
         _recipient.safeTransferETH(amount);
+    }
+
+    function borrowETH(
+        address _recipient,
+        uint _amount,
+        bytes memory _data
+    ) external payable ensureSolvency {
+        bytes32 ret = ILlamaFlashBorrower(_recipient).llamaFlashBorrowETH{value: _amount}(
+            msg.sender,
+            _data
+        );
+
+        if (ret != LLAMA_FLASH_BORROW_MAGIC) revert IncorrectBorrowMagic();
     }
 
     function setOracle(address _oracle) external payable onlyOwner {
